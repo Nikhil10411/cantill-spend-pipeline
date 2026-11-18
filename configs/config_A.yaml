@@ -1,0 +1,80 @@
+company_id: "A"
+reporting_currency: "ZAR"
+output_path: "output/nikhil_saini_A.csv"
+
+sources:
+  - name: "ERP"
+    path: "./data/company_A/erp_goods_receipts.csv"
+    id_prefix: "ERP:"
+    id_col: "line_id"
+    is_primary: true
+    amount_col: "value_zar"
+    is_gross: false
+    currency_col: "document_currency"
+    date_cols: ["posting_date"]
+    supplier_id_col: "vendor_id"
+    supplier_name_col: "supplier_name"
+    po_col: "po_number"
+    po_item_col: "po_item"
+    desc_cols: ["material_short_text", "service_short_text"]
+    context_cols: ["material_number", "material_type", "spend_type", "cost_centre", "opex_capex"]
+    status_col: null
+
+  - name: "TOOL"
+    path: "./data/company_A/invoice_tool_export.csv"
+    id_prefix: "TOOL:"
+    id_col: "tool_record_id"
+    is_primary: false
+    amount_col: "gross_amount"
+    is_gross: true
+    vat_col: "vat_rate"
+    default_vat_rate: 0.15
+    currency_col: "currency"
+    date_cols: ["invoice_date"]
+    supplier_name_col: "supplier_name_as_captured"
+    po_ref_col: "po_reference"
+    invoice_col: "invoice_number"
+    desc_cols: ["line_text"]
+    context_cols: []
+    status_col: "status"
+
+taxonomy:
+  path: "./data/company_A/taxonomy_A.csv"
+  level_cols: ["category_l1", "category_l2", "category_l3"]
+
+labels:
+  path: "./data/company_A/labels_A.csv"
+  mode: "golden_erp"
+  use_labels: true
+
+exclusions:
+  approved_statuses: ["approved", "paid"]
+  cancelled_statuses: ["cancelled", "canceled", "void", "voided"]
+  non_procurement_keywords:
+    - "intercompany"
+    - "inter-company"
+    - "vat payment"
+    - "tax remittance"
+    - "royalty"
+    - "royalties"
+    - "partner billing"
+    - "bank charge"
+    - "bank fee"
+    - "interest expense"
+    - "financing cost"
+    - "revenue"
+    - "credit note"
+  cross_system_dedup: true
+  internal_tool_dedup: true
+
+deduplication:
+  supplier_threshold: 88
+  item_threshold: 86
+
+classification:
+  embedding_model: "paraphrase-multilingual-MiniLM-L12-v2"
+  use_ollama_rerank: false
+  ollama_model: "qwen2.5:7b"
+  ollama_url: "http://localhost:11434/api/generate"
+  rerank_conf_threshold: 0.52
+  rerank_min_spend: 50000.0

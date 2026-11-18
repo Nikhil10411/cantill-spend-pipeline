@@ -1,0 +1,91 @@
+company_id: "C"
+reporting_currency: "USD"
+output_path: "output/nikhil_saini_C.csv"
+
+sources:
+  - name: "MAIN"
+    path: "./data/company_C/spend_data.csv"
+    id_prefix: ""
+    id_col: "line_id"
+    is_primary: true
+    amount_col: "amount"
+    is_gross: false
+    vat_col: null
+    default_vat_rate: 0.0
+    currency_col: "currency"
+    currency_rate_col: null
+    fx_rates_path: null
+    date_cols: ["posting_date", "invoice_date"]
+    supplier_id_col: "vendor_id"
+    supplier_name_col: "supplier_name"
+    po_col: "po_number"
+    po_item_col: "po_item"
+    po_ref_col: null
+    invoice_col: "invoice_number"
+    invoice_line_col: "invoice_line"
+    desc_cols: ["description"]
+    context_cols: ["gl_account_description", "gl_account", "material_number", "supplier_type", "document_type", "po_type", "transport_flag", "cost_centre"]
+    status_col: null
+
+taxonomy:
+  path: "./data/company_C/taxonomy_C.csv"
+  level_cols: ["category_l1", "category_l2", "category_l3"]
+
+labels:
+  path: null
+  mode: "none"
+  use_labels: false
+
+exclusions:
+  approved_statuses: []
+  cancelled_statuses: ["cancelled", "canceled", "void", "voided"]
+  non_procurement_keywords:
+    - "intercompany"
+    - "inter-company"
+    - "tax remittance"
+    - "vat payment"
+    - "withholding tax"
+    - "royalty"
+    - "royalties"
+    - "partner billing"
+    - "bank fee"
+    - "bank charge"
+    - "interest expense"
+    - "financing cost"
+    - "fx gain"
+    - "fx loss"
+  non_procurement_supplier_types:
+    - "intercompany"
+    - "tax"
+    - "government"
+    - "authority"
+    - "partner"
+    - "internal"
+  non_procurement_gl_patterns:
+    - "blcn"
+    - "interco"
+    - "i/c"
+    - "ic payable"
+    - "royalt"
+  non_procurement_gl_exact:
+    - "ic05"
+    - "ic06"
+    - "ic54"
+    - "ic67"
+    - "ppus"
+  detect_reversals: true
+  exclude_reversal_offsets: false
+  cross_system_dedup: false
+  internal_tool_dedup: false
+  internal_line_dedup: true
+
+deduplication:
+  supplier_threshold: 90
+  item_threshold: 86
+
+classification:
+  embedding_model: "paraphrase-multilingual-MiniLM-L12-v2"
+  use_ollama_rerank: true
+  ollama_model: "llama-3-8b-instruct:latest"
+  ollama_url: "http://localhost:11434/api/generate"
+  max_ollama_clusters: 350

@@ -1,0 +1,19 @@
+# Confidential Task Data — NEVER COMMIT
+data/
+*.csv
+!output/nikhil_saini_A.csv
+!output/nikhil_saini_B.csv
+!submission/nikhil_saini__A2.csv
+!submission/nikhil_saini__B2.csv
+!submission/nikhil_saini__C.csv
+
+# Python & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.cache/
+*.sqlite
+*.db
+.DS_Store

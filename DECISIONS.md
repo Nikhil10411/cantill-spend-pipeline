@@ -1,16 +1,60 @@
+---
+
+### 2. `DECISIONS.md`
+
+```markdown
 # Engineering & Data Ambiguity Decisions
 
-## 1. Company A: Cross-System Precedence & Tax Handling
-- **ERP vs. Invoice Tool Precedence**: Per procurement accounting rules, when a purchase appears in both `erp_goods_receipts.csv` and `invoice_tool_export.csv`, the `ERP:` record is retained (`include=1`) because it contains validated goods-receipt net values, cost centres, and material codes, while the corresponding `TOOL:` line is marked `include=0, exclusion_reason=DUPLICATE`.
-- **VAT Normalization**: `erp_goods_receipts.csv` (`value_zar`) is already net of tax. `invoice_tool_export.csv` (`gross_amount`) includes VAT; where `vat_rate` is blank/NaN, 15% (`0.15`) is applied (`gross / 1.15`). Values recorded as whole percentages (e.g., `15`) are normalized to `0.15` prior to division.
-- **PO Reference Parsing**: `po_reference` in `invoice_tool_export.csv` contains prefixes (`PO `), slashes (`4510085877/10`), and leading zeros. Regex extraction isolates the numeric PO core and optional line item number, stripping leading zeros to align with SAP `po_number` and `po_item`.
+This document records the key accounting, data-quality, and modeling decisions made while resolving real-world ERP/AP ambiguities across Company A, Company B, and blind unseen datasets (Company C).
 
-## 2. Company B: Multi-ERP Currencies, Dates & Reversals
-- **Missing or Out-of-Bounds Dates**: Where `invoice_date` is missing or contains implausible historical outliers (e.g., year `< 2020`), the pipeline falls back to `posting_date` for FX month lookup and temporal checks.
-- **FX Conversion Fallback**: Non-USD lines first use the row-level `currency_rate` (`line_amount / currency_rate`). Where missing or zero, `fx_rates_usd.csv` is joined on `(currency, YYYY-MM)`. If a specific `(currency, month)` pair is absent from the FX table (e.g., `AED` in `2024-02`), the currency's median `units_per_usd` across available months is used as a deterministic fallback.
-- **Offsetting Reversal Pairs**: Equal-and-opposite line amounts on the same `(vendor_id, invoice_number)` (e.g., `-13827.64` and `+13827.64`) represent cancelled/reversed postings; both lines are excluded with `exclusion_reason=CANCELLED` and `spend=0`.
-- **Supplier Key Without Supplier Names**: Because `invoice_lines.csv` provides `vendor_id` without vendor names, `supplier_key` is derived from normalized `vendor_id` (stripping leading zeros).
-- **Blank Line Descriptions**: Rows with empty `line_description` are enriched using `gl_account_description`, `material_number`, `po_type`, `supplier_type`, and `transport_flag` so both deduplication (`item_key`) and multilingual taxonomy classification remain accurate.
+---
 
-## 3. Generalization to Company C
-- **Zero-Label Readiness**: No category strings or company-specific column names exist in `src/`. Company C requires only creating `submission/config_C.yaml` mapping its column names and up to 4 taxonomy levels (`category_l1`..`category_l4`).
+## 1. Company A: Multi-System Reconciliation & Tax Normalization
+
+### Decision 1.1: ERP Goods Receipts Take Precedence Over AP Invoice Tool Lines
+* **Observation**: Company A provides two overlapping feeds—`erp_goods_receipts.csv` (37,029 rows) and `invoice_tool_export.csv` (28,520 rows)—where ~19,800 purchases appear in both systems.
+* **Decision**: Retain the `ERP:` record (`include = 1`) as the system of record and mark the matched `TOOL:` record as `include = 0, exclusion_reason = DUPLICATE, spend = 0`.
+* **Rationale**: SAP goods receipts carry audited net values (`value_zar`), validated cost centres, and material codes, whereas the AP invoice tool captures downstream gross invoice entries (including unmatched non-PO/services invoices that remain `include = 1` when no ERP counterpart exists).
+
+### Decision 1.2: Gross-to-Net VAT Stripping with 15% South African Standard Default
+* **Observation**: `erp_goods_receipts.csv` (`value_zar`) is recorded net of tax, whereas `invoice_tool_export.csv` (`gross_amount`) includes VAT, with `vat_rate` formatted variably (`0.15`, `15`, or blank).
+* **Decision**: Configure `is_gross: false` for `ERP` and `is_gross: true` with `default_vat_rate: 0.15` for `TOOL`. Values $> 1.0$ (e.g., `15`) are divided by `100` prior to computing `net_spend = gross / (1 + vat_rate)`.
+
+### Decision 1.3: Regex Extraction of Reformatted PO & Line-Item Keys
+* **Observation**: `invoice_tool_export.csv` encodes purchase orders as free-text strings (`PO 4510109330`, `4510085877/10`, or zero-padded strings) that fail naive string joins against SAP `po_number` and `po_item`.
+* **Decision**: Apply regex normalization during ingestion to split compound `PO/Item` references and strip prefixes and leading zeros, enabling exact Pass-1 `(po_number, po_item)` matching (`0.99` confidence) backed by tolerance-bounded Pass-2/Pass-3 fallbacks.
+
+---
+
+## 2. Company B: Multi-Currency Ledgers, Date Outliers & Precision Exclusions
+
+### Decision 2.1: Posting-Date Fallback for Missing or Implausible Invoice Dates
+* **Observation**: Several rows in `invoice_lines.csv` contain missing `invoice_date` values or corrupted historical years (`< 2020`) that break monthly FX rate lookups.
+* **Decision**: Configure `date_cols: ["invoice_date", "posting_date"]` so `src/cleaner.py` automatically rejects out-of-bounds timestamps and resolves the valid accounting `posting_date` for FX month alignment.
+
+### Decision 2.2: Three-Tier FX Resolution (`currency_rate` $\rightarrow$ Monthly FX Table $\rightarrow$ Currency Median)
+* **Observation**: Non-USD invoice lines occasionally lack an inline `currency_rate` (or have `0`), and specific `(currency, YYYY-MM)` pairs (e.g., `AED` in `2024-02`) are absent from `fx_rates_usd.csv`.
+* **Decision**: Resolve `net_spend_reporting` in strict priority order: (1) valid row-level `line_amount / currency_rate`, (2) exact `(currency, YYYY-MM)` lookup in `fx_rates_usd.csv`, and (3) currency-level median `units_per_usd` across available months so zero spend is dropped due to sparse FX coverage.
+
+### Decision 2.3: Non-Destructive Negative Reversal Filtering (`exclude_reversal_offsets: false`)
+* **Observation**: Negative line amounts represent credit memos/reversals, while positive lines on the same `(vendor_id, invoice_number)` frequently represent valid net procurement charges rather than cancelled pairs.
+* **Decision**: Exclude negative reversal lines (`amt < -1e-4`) as `exclusion_reason = CANCELLED` while keeping positive invoice lines eligible unless explicitly flagged by status or non-procurement rules (`exclude_reversal_offsets: false`). This prevented false-positive exclusions on valid positive invoices.
+
+### Decision 2.4: Preventing False Exclusions on Shared Entity Codes (`PEUS`, `FXW`) vs. True Intercompany GLs
+* **Observation**: During error analysis on Company B's 3,000 seed rows, broad substring rules (`ic0..ic9`) and entity codes (`PEUS`, `FXW`) inside `gl_account_description` caused 917 false exclusions (dropping Include/Exclude accuracy to 68.40%) because `PEUS` and `FXW` are operating company codes shared by hundreds of valid procurement lines.
+* **Decision**:
+  1. Separate substring GL patterns (`blcn`, `interco`, `i/c`, `ic payable`, `royalt`) from exact non-procurement GL codes (`non_procurement_gl_exact`: `ic05`, `ic06`, `ic54`, `ic67`, `ppus`).
+  2. Tighten seed-learned exclusion purity (`learn_seed_exclusion_signals`) to $\ge 98\%$ `NON_PROCUREMENT` concentration ($n \ge 3$) restricted to `gl_account` and `gl_account_description`.
+  3. **Impact**: Restored Company B seed Include/Exclude accuracy from **68.40% $\rightarrow$ 94.63%** and Seed L3 classification accuracy from **63.22% $\rightarrow$ 97.22%**.
+
+### Decision 2.5: Canonical Key Generation Without Supplier Names or Line Descriptions
+* **Observation**: Company B provides `vendor_id` without a `supplier_name` column, and numerous rows have blank `line_description` fields.
+* **Decision**: Derive `supplier_key` from zero-stripped normalized `vendor_id` when `supplier_name` is absent, and enrich blank descriptions with `gl_account_description`, `po_type`, and `transport_flag` (`"freight transport logistics shipping"`) prior to both item deduplication and multilingual embedding classification.
+
+---
+
+## 3. Generalization to Unseen Datasets (Company C)
+
+### Decision 3.1: Leaf-First Multilingual Embeddings & Optional Local LLM Reranking
+* **Observation**: Blind test datasets (Company C) provide no training labels and may contain unseen 3- or 4-level taxonomies and non-English descriptions.
+* **Decision**: Encode taxonomy paths leaf-first (`Leaf | Parent | Root`) with `paraphrase-multilingual-MiniLM-L12-v2`, boost exact leaf/path lexical overlap, and enable optional local Ollama JSON re-ranking (`use_ollama_rerank: true`, `temperature=0.0`) on top-spend clusters—requiring zero paid API keys and zero code modifications to `src/`.

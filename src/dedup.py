@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
 import pandas as pd
 from rapidfuzz import fuzz, process
-from src.ingest import read_csv_safe
+from src.ingest import get_reference_df, read_csv_safe
 
 
 LEGAL_SUFFIXES = re.compile(
@@ -31,7 +31,6 @@ def blocked_fuzzy_cluster(unique_strings: List[str], threshold: int = 88) -> Dic
     if not cleaned:
         return mapping
 
-    # Group by first 3 alphanumeric characters to keep fuzzy matching O(N * block_size)
     blocks: Dict[str, List[str]] = {}
     for s in sorted(set(cleaned), key=lambda x: (-len(x), x)):
         key = re.sub(r"[^a-z0-9]", "", s)[:3] or "misc"
@@ -59,25 +58,25 @@ def resolve_entities(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
     sup_thresh = int(dedup_cfg.get("supplier_threshold", 88))
     item_thresh = int(dedup_cfg.get("item_threshold", 86))
 
-    # 1. Supplier Deduplication
     sup_name_list: List[str] = [
         normalize_text(str(x), strip_legal=True) for x in df["supplier_name"].fillna("").tolist()
     ]
     sup_id_list: List[str] = [
         str(x).strip().lstrip("0") for x in df["supplier_id"].fillna("").tolist()
     ]
-    record_id_list: List[str] = [str(x).strip() for x in df["record_id"].fillna("").tolist()]
 
     golden_sup_map: Dict[str, str] = {}
     lbl_cfg = cfg.get("labels", {})
+    ref_df = get_reference_df(cfg, df)
+
     if lbl_cfg.get("use_labels") and lbl_cfg.get("mode") == "golden_erp" and lbl_cfg.get("path"):
         labels_df = read_csv_safe(str(lbl_cfg["path"]))
-        base_sup_df = pd.DataFrame({
-            "record_id": record_id_list,
-            "supplier_id": sup_id_list,
-            "sn": sup_name_list,
+        ref_sup_df = pd.DataFrame({
+            "record_id": [str(x).strip() for x in ref_df["record_id"].fillna("").tolist()],
+            "supplier_id": [str(x).strip().lstrip("0") for x in ref_df["supplier_id"].fillna("").tolist()],
+            "sn": [normalize_text(str(x), strip_legal=True) for x in ref_df["supplier_name"].fillna("").tolist()],
         })
-        merged = base_sup_df.merge(labels_df[["record_id", "supplier_key"]], on="record_id", how="inner")
+        merged = ref_sup_df.merge(labels_df[["record_id", "supplier_key"]], on="record_id", how="inner")
         for sn_val, sid_val, sk_val in zip(
             merged["sn"].astype(str).tolist(),
             merged["supplier_id"].astype(str).tolist(),
@@ -88,10 +87,9 @@ def resolve_entities(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
             if sid_val and sk_val:
                 golden_sup_map[f"ID:{sid_val}"] = sk_val
 
-    unique_sup_names = [s for s in set(sup_name_list) if s]
-    fuzzy_sup_map = blocked_fuzzy_cluster(unique_sup_names, threshold=sup_thresh)
+    all_sup_names = [s for s in set(sup_name_list) | set(golden_sup_map.keys()) if s and not s.startswith("ID:")]
+    fuzzy_sup_map = blocked_fuzzy_cluster(all_sup_names, threshold=sup_thresh)
 
-    # Link vendor_id to canonical supplier_name when both co-occur (e.g., ERP rows in Company A)
     id_to_canon_name: Dict[str, str] = {}
     for sid, sname in zip(sup_id_list, sup_name_list):
         if sid and sname:
@@ -128,12 +126,19 @@ def resolve_entities(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
     golden_item_map: Dict[str, str] = {}
     if lbl_cfg.get("use_labels") and lbl_cfg.get("mode") == "golden_erp" and lbl_cfg.get("path"):
         labels_df = read_csv_safe(str(lbl_cfg["path"]))
-        base_itm_df = pd.DataFrame({
-            "record_id": record_id_list,
-            "mat_norm": mat_list,
-            "in_norm": item_norm_list,
+        ref_desc = [str(x).strip() for x in ref_df["description"].fillna("").tolist()]
+        ref_gl = [str(x).strip() for x in ref_df["gl_account_description"].fillna("").tolist()]
+        ref_mat = [str(x).strip().lstrip("0") for x in ref_df["material_number"].fillna("").tolist()]
+        ref_inorm = [
+            normalize_text(d if d else (g if g else m), strip_legal=False)
+            for d, g, m in zip(ref_desc, ref_gl, ref_mat)
+        ]
+        ref_itm_df = pd.DataFrame({
+            "record_id": [str(x).strip() for x in ref_df["record_id"].fillna("").tolist()],
+            "mat_norm": ref_mat,
+            "in_norm": ref_inorm,
         })
-        merged_i = base_itm_df.merge(labels_df[["record_id", "item_key"]], on="record_id", how="inner")
+        merged_i = ref_itm_df.merge(labels_df[["record_id", "item_key"]], on="record_id", how="inner")
         for in_val, mat_val, ik_val in zip(
             merged_i["in_norm"].astype(str).tolist(),
             merged_i["mat_norm"].astype(str).tolist(),
@@ -144,8 +149,8 @@ def resolve_entities(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
             if mat_val and ik_val:
                 golden_item_map[f"MAT:{mat_val}"] = ik_val
 
-    unique_items = [i for i in set(item_norm_list) if i]
-    fuzzy_item_map = blocked_fuzzy_cluster(unique_items, threshold=item_thresh)
+    all_items = [i for i in set(item_norm_list) | set(golden_item_map.keys()) if i and not i.startswith("MAT:")]
+    fuzzy_item_map = blocked_fuzzy_cluster(all_items, threshold=item_thresh)
 
     item_keys: List[str] = []
     for mat, inorm in zip(mat_list, item_norm_list):

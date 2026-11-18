@@ -1,9 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import pandas as pd
 import yaml
+
+
+_REF_CACHE: Dict[str, pd.DataFrame] = {}
 
 
 def _to_str_list(series: pd.Series) -> List[str]:
@@ -21,7 +24,6 @@ def read_csv_safe(path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Required CSV not found: {file_path}")
     for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
         try:
-            # Read all columns as str to protect leading zeros and large numeric IDs
             return pd.read_csv(file_path, dtype=str, keep_default_na=False, encoding=enc)
         except UnicodeDecodeError:
             continue
@@ -43,11 +45,18 @@ def load_taxonomy(taxonomy_cfg: Dict[str, Any]) -> pd.DataFrame:
     return tax
 
 
-def ingest_sources(cfg: Dict[str, Any]) -> pd.DataFrame:
+def _ingest_from_sources(sources_cfg: List[Dict[str, Any]], input_dir_override: Optional[str] = None) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
 
-    for src in cfg["sources"]:
-        raw = read_csv_safe(str(src["path"]))
+    for src in sources_cfg:
+        orig_path = Path(str(src["path"]))
+        if input_dir_override:
+            candidate = Path(input_dir_override) / orig_path.name
+            src_path = str(candidate) if candidate.exists() else str(orig_path)
+        else:
+            src_path = str(orig_path)
+
+        raw = read_csv_safe(src_path)
         n = len(raw)
         prefix = str(src.get("id_prefix", ""))
         id_col = str(src["id_col"])
@@ -80,6 +89,13 @@ def ingest_sources(cfg: Dict[str, Any]) -> pd.DataFrame:
         else:
             contexts = [""] * n
 
+        fx_orig = str(src.get("fx_rates_path") or "")
+        if fx_orig and input_dir_override:
+            fx_cand = Path(input_dir_override) / Path(fx_orig).name
+            fx_resolved = str(fx_cand) if fx_cand.exists() else fx_orig
+        else:
+            fx_resolved = fx_orig
+
         data_dict: Dict[str, Any] = {
             "_row_order": list(range(n)),
             "_source": [str(src["name"])] * n,
@@ -91,7 +107,7 @@ def ingest_sources(cfg: Dict[str, Any]) -> pd.DataFrame:
             "default_vat_rate": [float(src.get("default_vat_rate", 0.0))] * n,
             "currency": [v.upper() for v in get_list(src.get("currency_col"))],
             "currency_rate": get_list(src.get("currency_rate_col")),
-            "fx_rates_path": [str(src.get("fx_rates_path") or "")] * n,
+            "fx_rates_path": [fx_resolved] * n,
             "primary_date_raw": get_list(date_cols[0]) if len(date_cols) > 0 else [""] * n,
             "fallback_date_raw": get_list(date_cols[1]) if len(date_cols) > 1 else [""] * n,
             "supplier_id": get_list(src.get("supplier_id_col")),
@@ -108,6 +124,9 @@ def ingest_sources(cfg: Dict[str, Any]) -> pd.DataFrame:
 
         extra_cols = [
             "material_number",
+            "material_type",
+            "spend_type",
+            "opex_capex",
             "gl_account",
             "gl_account_description",
             "supplier_type",
@@ -124,3 +143,31 @@ def ingest_sources(cfg: Dict[str, Any]) -> pd.DataFrame:
     combined = pd.concat(frames, ignore_index=True)
     combined["_global_idx"] = list(range(len(combined)))
     return combined
+
+
+def ingest_sources(cfg: Dict[str, Any], input_dir_override: Optional[str] = None) -> pd.DataFrame:
+    return _ingest_from_sources(cfg["sources"], input_dir_override=input_dir_override)
+
+
+def get_reference_df(cfg: Dict[str, Any], current_df: pd.DataFrame) -> pd.DataFrame:
+    """Return historical training dataframe if current_df is a blind test split (A2/B2) with new record_ids."""
+    lbl_cfg = cfg.get("labels", {})
+    lbl_path = str(lbl_cfg.get("path") or "")
+    if not lbl_path or not Path(lbl_path).exists():
+        return current_df
+
+    lbl_df = read_csv_safe(lbl_path)
+    id_col = "record_id" if "record_id" in lbl_df.columns else "line_id"
+    lbl_ids = set(_to_str_list(lbl_df[id_col]))
+    cur_ids = set(_to_str_list(current_df["record_id"]))
+
+    if len(cur_ids & lbl_ids) > 0:
+        return current_df
+
+    cache_key = str(cfg.get("company_id", ""))
+    if cache_key not in _REF_CACHE:
+        try:
+            _REF_CACHE[cache_key] = _ingest_from_sources(cfg["sources"], input_dir_override=None)
+        except Exception:
+            return current_df
+    return _REF_CACHE[cache_key]

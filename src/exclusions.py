@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Set, Tuple
 import numpy as np
 import pandas as pd
-from src.ingest import read_csv_safe
+from src.ingest import get_reference_df, read_csv_safe
 
 
 _LEGAL_RE = re.compile(r"\b(pty|ltd|limited|inc|corp|corporation|llc|gmbh|sa|co|plc)\b\.?", re.IGNORECASE)
@@ -34,7 +34,8 @@ def learn_seed_exclusion_signals(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[
         return learned
 
     seed = read_csv_safe(str(lbl_cfg["path"]))
-    merged = df.merge(seed, left_on="record_id", right_on="line_id", how="inner")
+    ref_df = get_reference_df(cfg, df)
+    merged = ref_df.merge(seed, left_on="record_id", right_on="line_id", how="inner")
     non_proc = merged[merged["exclusion_reason"] == "NON_PROCUREMENT"]
 
     if not non_proc.empty:

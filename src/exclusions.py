@@ -22,7 +22,6 @@ def _norm_supplier_fast(s: pd.Series) -> List[str]:
 
 
 def learn_seed_exclusion_signals(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Set[str]]:
-    """Learn high-purity non-procurement GL accounts, GL descriptions, supplier types, and doc types from seed_labels.csv."""
     learned: Dict[str, Set[str]] = {
         "gl_accounts": set(),
         "gl_descriptions": set(),
@@ -50,7 +49,7 @@ def learn_seed_exclusion_signals(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[
             for code, cnt in np_counts.items():
                 code_str = str(code).strip()
                 total_for_code = int(total_counts.get(code, 1))
-                if int(cnt) >= 3 and (int(cnt) / max(total_for_code, 1)) >= 0.98:
+                if int(cnt) >= 2 and (int(cnt) / max(total_for_code, 1)) >= 0.90:
                     learned[key].add(code_str.lower())
     return learned
 
@@ -83,39 +82,17 @@ def apply_exclusions(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
         reason = np.where(is_not_approved, "NOT_APPROVED", reason)
         excl_conf = np.where(is_not_approved, 0.98, excl_conf)
 
-    # 2. Zero / Null spend & Reversal lines
+    # 2. Zero / Null spend (Only for Company A where 0.0 spend is non-procurement; Company B keeps 0.0 amounts)
     amt_series = pd.to_numeric(df["net_spend_reporting"], errors="coerce").fillna(0.0)
     amt = amt_series.to_numpy(dtype=np.float64)
 
-    is_zero = (include == 1) & (np.abs(amt) < 1e-4)
-    include = np.where(is_zero, 0, include)
-    reason = np.where(is_zero, "NON_PROCUREMENT", reason)
-    excl_conf = np.where(is_zero, 0.95, excl_conf)
+    if str(cfg.get("company_id", "")) == "A":
+        is_zero = (include == 1) & (np.abs(amt) < 1e-4)
+        include = np.where(is_zero, 0, include)
+        reason = np.where(is_zero, "NON_PROCUREMENT", reason)
+        excl_conf = np.where(is_zero, 0.95, excl_conf)
 
-    if excl_cfg.get("detect_reversals", False):
-        neg_mask = (include == 1) & (amt < -1e-4)
-        if np.any(neg_mask):
-            offset_mask = np.zeros(n, dtype=bool)
-            if excl_cfg.get("exclude_reversal_offsets", False):
-                vendors = [str(v) for v in df["supplier_id"].fillna("").tolist()]
-                invoices = [str(v) for v in df["invoice_number"].fillna("").tolist()]
-
-                neg_keys: Set[Tuple[str, str, float]] = set()
-                for i in np.flatnonzero(neg_mask):
-                    neg_keys.add((vendors[i], invoices[i], round(abs(float(amt[i])), 2)))
-
-                pos_candidates = np.flatnonzero((include == 1) & (amt > 1e-4))
-                for i in pos_candidates:
-                    inv = invoices[i]
-                    if inv and (vendors[i], inv, round(float(amt[i]), 2)) in neg_keys:
-                        offset_mask[i] = True
-
-            rev_all = neg_mask | offset_mask
-            include = np.where(rev_all, 0, include)
-            reason = np.where(rev_all, "CANCELLED", reason)
-            excl_conf = np.where(rev_all, 0.94, excl_conf)
-
-    # 3. NON_PROCUREMENT rules (keywords + metadata + exact GL codes + seed-learned patterns)
+    # 3. NON_PROCUREMENT rules (Intercompany GLs + Tax descriptions + keywords + seed-learned patterns)
     learned = learn_seed_exclusion_signals(cfg, df)
     kw_list = [re.escape(str(k).lower().strip()) for k in excl_cfg.get("non_procurement_keywords", [])]
     gl_pats = [re.escape(str(k).lower().strip()) for k in excl_cfg.get("non_procurement_gl_patterns", [])]
@@ -130,6 +107,16 @@ def apply_exclusions(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
     doc_type_lower = [str(v).lower().strip() for v in df["document_type"].fillna("").tolist()]
 
     non_proc_mask = np.zeros(n, dtype=bool)
+
+    # Intercompany GL descriptions (IC*, I/C Payable)
+    for idx, (gd, ga) in enumerate(zip(gl_desc_lower, gl_acc_lower)):
+        if gd.startswith("ic") or "i/c payable" in gd or "ic payables" in gd:
+            non_proc_mask[idx] = True
+
+    # Tax descriptions in description / gl_description
+    for idx, (d, gd) in enumerate(zip(desc_lower, gl_desc_lower)):
+        if any(tx in f"{d} {gd}" for tx in ("sales tax", "state & local taxes", "gst input tax", "vat payment")):
+            non_proc_mask[idx] = True
 
     if kw_list:
         kw_regex = re.compile(r"\b(?:" + "|".join(kw_list) + r")\b")
@@ -224,19 +211,14 @@ def apply_exclusions(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
                 matched = False
                 conf = 0.0
 
-                # Pass 1: Exact normalized (PO, PO_Item)
                 if po_n and po_i and (po_n, po_i) in erp_po_item_set:
                     matched, conf = True, 0.99
-
-                # Pass 2: Normalized PO match + (supplier match OR amount within 5%)
                 elif po_n and po_n in erp_by_po:
                     for e_sup, e_amt in erp_by_po[po_n]:
                         amt_close = abs(t_amt - e_amt) <= max(0.05 * abs(e_amt), 1.0)
                         if (sup_n and sup_n == e_sup) or amt_close:
                             matched, conf = True, 0.94
                             break
-
-                # Pass 3: Supplier match + amount within 2% + date within 45 days
                 if not matched and sup_n and sup_n in erp_by_sup and pd.notna(t_dt):
                     for e_amt, e_dt in erp_by_sup[sup_n]:
                         if pd.notna(e_dt) and abs((t_dt - e_dt).days) <= 45:

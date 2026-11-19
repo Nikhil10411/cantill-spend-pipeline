@@ -1,35 +1,28 @@
-company_id: "C"
+﻿company_id: "C"
 reporting_currency: "USD"
-output_path: "output/nikhil_saini_C.csv"
+output_path: "submission/nikhil_saini__C.csv"
 
 sources:
   - name: "MAIN"
-    path: "./data/company_C/spend_data.csv"
+    path: "./data/Blind_Test_Files/C/invoice_lines.csv"
     id_prefix: ""
     id_col: "line_id"
     is_primary: true
-    amount_col: "amount"
+    amount_col: "line_amount_usd"
     is_gross: false
-    vat_col: null
-    default_vat_rate: 0.0
-    currency_col: "currency"
-    currency_rate_col: null
-    fx_rates_path: null
-    date_cols: ["posting_date", "invoice_date"]
-    supplier_id_col: "vendor_id"
+    currency_col: null
+    date_cols: ["invoice_date", "status_date"]
+    supplier_id_col: null
     supplier_name_col: "supplier_name"
-    po_col: "po_number"
-    po_item_col: "po_item"
-    po_ref_col: null
     invoice_col: "invoice_number"
     invoice_line_col: "invoice_line"
-    desc_cols: ["description"]
-    context_cols: ["gl_account_description", "gl_account", "material_number", "supplier_type", "document_type", "po_type", "transport_flag", "cost_centre"]
-    status_col: null
+    desc_cols: ["line_description", "product_service_description", "invoice_description"]
+    context_cols: ["gl_account_description", "product_service_code", "submission_type", "buyer_entity"]
+    status_col: "status"
 
 taxonomy:
-  path: "./data/company_C/taxonomy_C.csv"
-  level_cols: ["category_l1", "category_l2", "category_l3"]
+  path: "./data/Blind_Test_Files/C/category_tree_C.csv"
+  level_cols: ["level_1", "level_2", "level_3", "level_4"]
 
 labels:
   path: null
@@ -37,55 +30,55 @@ labels:
   use_labels: false
 
 exclusions:
-  approved_statuses: []
+  approved_statuses: ["approved", "paid"]
   cancelled_statuses: ["cancelled", "canceled", "void", "voided"]
   non_procurement_keywords:
     - "intercompany"
     - "inter-company"
+    - "ad valorem tax"
+    - "ad valorem taxes"
+    - "severance tax"
+    - "severance taxes"
+    - "sales tax"
     - "tax remittance"
     - "vat payment"
-    - "withholding tax"
-    - "royalty"
+    - "royalty payable"
     - "royalties"
+    - "jib deposits"
+    - "joint interest billing"
     - "partner billing"
+    - "revenue deposits"
+    - "gas revenue"
+    - "disposal revenue"
+    - "o&g revenue"
+    - "penalty and fees"
+    - "public filing fees"
+    - "director fees"
     - "bank fee"
     - "bank charge"
     - "interest expense"
     - "financing cost"
-    - "fx gain"
-    - "fx loss"
-  non_procurement_supplier_types:
-    - "intercompany"
-    - "tax"
-    - "government"
-    - "authority"
-    - "partner"
-    - "internal"
   non_procurement_gl_patterns:
-    - "blcn"
-    - "interco"
-    - "i/c"
-    - "ic payable"
-    - "royalt"
-  non_procurement_gl_exact:
-    - "ic05"
-    - "ic06"
-    - "ic54"
-    - "ic67"
-    - "ppus"
-  detect_reversals: true
-  exclude_reversal_offsets: false
-  cross_system_dedup: false
-  internal_tool_dedup: false
+    - "revenue"
+    - "gas rev."
+    - "ad valorem tax"
+    - "severance tax"
+    - "impact fee & other tax"
+    - "royalty payable"
+    - "jib deposits"
+    - "penalty and fees"
+    - "public filing fees"
+    - "director fees"
+    - "intercompany"
   internal_line_dedup: true
 
 deduplication:
-  supplier_threshold: 90
-  item_threshold: 86
+  supplier_threshold: 88
+  item_threshold: 85
 
 classification:
   embedding_model: "paraphrase-multilingual-MiniLM-L12-v2"
-  use_ollama_rerank: true
+  use_ollama_rerank: false
   ollama_model: "llama-3-8b-instruct:latest"
   ollama_url: "http://localhost:11434/api/generate"
-  max_ollama_clusters: 350
+  max_ollama_clusters: 400
